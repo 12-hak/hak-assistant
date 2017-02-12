@@ -4,23 +4,36 @@ EnOcean Component.
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/EnOcean/
 """
+import logging
 
-DOMAIN = "enocean"
+import voluptuous as vol
+
+from homeassistant.const import CONF_DEVICE
+import homeassistant.helpers.config_validation as cv
 
 REQUIREMENTS = ['enocean==0.31']
 
-CONF_DEVICE = "device"
+_LOGGER = logging.getLogger(__name__)
+
+DOMAIN = 'enocean'
 
 ENOCEAN_DONGLE = None
+
+CONFIG_SCHEMA = vol.Schema({
+    DOMAIN: vol.Schema({
+        vol.Required(CONF_DEVICE): cv.string,
+    }),
+}, extra=vol.ALLOW_EXTRA)
 
 
 def setup(hass, config):
     """Setup the EnOcean component."""
     global ENOCEAN_DONGLE
 
-    serial_dev = config[DOMAIN].get(CONF_DEVICE, "/dev/ttyUSB0")
+    serial_dev = config[DOMAIN].get(CONF_DEVICE)
 
     ENOCEAN_DONGLE = EnOceanDongle(hass, serial_dev)
+
     return True
 
 
@@ -43,14 +56,14 @@ class EnOceanDongle:
         """Send a command from the EnOcean dongle."""
         self.__communicator.send(command)
 
-    def _combine_hex(self, data):  # pylint: disable=no-self-use
+    # pylint: disable=no-self-use
+    def _combine_hex(self, data):
         """Combine list of integer values to one big integer."""
         output = 0x00
         for i, j in enumerate(reversed(data)):
             output |= (j << i * 8)
         return output
 
-    # pylint: disable=too-many-branches
     def callback(self, temp):
         """Callback function for EnOcean Device.
 
@@ -99,7 +112,6 @@ class EnOceanDongle:
                         device.value_changed(value)
 
 
-# pylint: disable=too-few-public-methods
 class EnOceanDevice():
     """Parent class for all devices associated with the EnOcean component."""
 

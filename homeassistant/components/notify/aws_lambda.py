@@ -7,34 +7,35 @@ https://home-assistant.io/components/notify.aws_lambda/
 import logging
 import json
 import base64
+
 import voluptuous as vol
 
 from homeassistant.const import (
     CONF_PLATFORM, CONF_NAME)
 from homeassistant.components.notify import (
-    ATTR_TARGET, BaseNotificationService)
+    ATTR_TARGET, PLATFORM_SCHEMA, BaseNotificationService)
+import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
-REQUIREMENTS = ["boto3==1.3.1"]
+REQUIREMENTS = ["boto3==1.4.3"]
 
-CONF_REGION = "region_name"
-CONF_ACCESS_KEY_ID = "aws_access_key_id"
-CONF_SECRET_ACCESS_KEY = "aws_secret_access_key"
-CONF_PROFILE_NAME = "profile_name"
-CONF_CONTEXT = "context"
+CONF_REGION = 'region_name'
+CONF_ACCESS_KEY_ID = 'aws_access_key_id'
+CONF_SECRET_ACCESS_KEY = 'aws_secret_access_key'
+CONF_PROFILE_NAME = 'profile_name'
+CONF_CONTEXT = 'context'
+ATTR_CREDENTIALS = 'credentials'
 
-PLATFORM_SCHEMA = vol.Schema({
-    vol.Required(CONF_PLATFORM): "aws_lambda",
-    vol.Optional(CONF_NAME): vol.Coerce(str),
-    vol.Optional(CONF_REGION, default="us-east-1"): vol.Coerce(str),
-    vol.Inclusive(CONF_ACCESS_KEY_ID, "credentials"): vol.Coerce(str),
-    vol.Inclusive(CONF_SECRET_ACCESS_KEY, "credentials"): vol.Coerce(str),
-    vol.Exclusive(CONF_PROFILE_NAME, "credentials"): vol.Coerce(str),
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Optional(CONF_REGION, default="us-east-1"): cv.string,
+    vol.Inclusive(CONF_ACCESS_KEY_ID, ATTR_CREDENTIALS): cv.string,
+    vol.Inclusive(CONF_SECRET_ACCESS_KEY, ATTR_CREDENTIALS): cv.string,
+    vol.Exclusive(CONF_PROFILE_NAME, ATTR_CREDENTIALS): cv.string,
     vol.Optional(CONF_CONTEXT, default=dict()): vol.Coerce(dict)
 })
 
 
-def get_service(hass, config):
+def get_service(hass, config, discovery_info=None):
     """Get the AWS Lambda notification service."""
     context_str = json.dumps({'hass': hass.config.as_dict(),
                               'custom': config[CONF_CONTEXT]})
@@ -61,7 +62,6 @@ def get_service(hass, config):
     return AWSLambda(lambda_client, context)
 
 
-# pylint: disable=too-few-public-methods
 class AWSLambda(BaseNotificationService):
     """Implement the notification service for the AWS Lambda service."""
 
@@ -77,9 +77,6 @@ class AWSLambda(BaseNotificationService):
         if not targets:
             _LOGGER.info("At least 1 target is required")
             return
-
-        if not isinstance(targets, list):
-            targets = [targets]
 
         for target in targets:
             cleaned_kwargs = dict((k, v) for k, v in kwargs.items() if v)

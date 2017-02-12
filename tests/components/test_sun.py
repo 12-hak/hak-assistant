@@ -1,9 +1,10 @@
 """The tests for the Sun component."""
-# pylint: disable=too-many-public-methods,protected-access
+# pylint: disable=protected-access
 import unittest
 from unittest.mock import patch
 from datetime import timedelta, datetime
 
+from homeassistant.bootstrap import setup_component
 import homeassistant.core as ha
 import homeassistant.util.dt as dt_util
 import homeassistant.components.sun as sun
@@ -11,14 +12,15 @@ import homeassistant.components.sun as sun
 from tests.common import get_test_home_assistant
 
 
+# pylint: disable=invalid-name
 class TestSun(unittest.TestCase):
     """Test the sun module."""
 
-    def setUp(self):  # pylint: disable=invalid-name
+    def setUp(self):
         """Setup things to be run when tests are started."""
         self.hass = get_test_home_assistant()
 
-    def tearDown(self):  # pylint: disable=invalid-name
+    def tearDown(self):
         """Stop everything that was started."""
         self.hass.stop()
 
@@ -31,7 +33,8 @@ class TestSun(unittest.TestCase):
 
     def test_setting_rising(self):
         """Test retrieving sun setting and rising."""
-        sun.setup(self.hass, {sun.DOMAIN: {sun.CONF_ELEVATION: 0}})
+        setup_component(self.hass, sun.DOMAIN, {
+            sun.DOMAIN: {sun.CONF_ELEVATION: 0}})
 
         from astral import Astral
 
@@ -71,7 +74,8 @@ class TestSun(unittest.TestCase):
 
     def test_state_change(self):
         """Test if the state changes at next setting/rising."""
-        sun.setup(self.hass, {sun.DOMAIN: {sun.CONF_ELEVATION: 0}})
+        setup_component(self.hass, sun.DOMAIN, {
+            sun.DOMAIN: {sun.CONF_ELEVATION: 0}})
 
         if sun.is_on(self.hass):
             test_state = sun.STATE_BELOW_HORIZON
@@ -85,7 +89,7 @@ class TestSun(unittest.TestCase):
         self.hass.bus.fire(ha.EVENT_TIME_CHANGED,
                            {ha.ATTR_NOW: test_time + timedelta(seconds=5)})
 
-        self.hass.pool.block_till_done()
+        self.hass.block_till_done()
 
         self.assertEqual(test_state, self.hass.states.get(sun.ENTITY_ID).state)
 
@@ -98,7 +102,8 @@ class TestSun(unittest.TestCase):
 
         with patch('homeassistant.helpers.condition.dt_util.utcnow',
                    return_value=june):
-            assert sun.setup(self.hass, {sun.DOMAIN: {sun.CONF_ELEVATION: 0}})
+            assert setup_component(self.hass, sun.DOMAIN, {
+                sun.DOMAIN: {sun.CONF_ELEVATION: 0}})
 
         state = self.hass.states.get(sun.ENTITY_ID)
 

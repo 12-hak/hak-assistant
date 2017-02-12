@@ -4,25 +4,24 @@ Component to offer a way to select a value from a slider.
 For more details about this component, please refer to the documentation
 at https://home-assistant.io/components/input_slider/
 """
+import asyncio
 import logging
 
 import voluptuous as vol
 
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_UNIT_OF_MEASUREMENT
+from homeassistant.const import (
+    ATTR_ENTITY_ID, ATTR_UNIT_OF_MEASUREMENT, CONF_ICON, CONF_NAME)
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_component import EntityComponent
-from homeassistant.util import slugify
 
 DOMAIN = 'input_slider'
 ENTITY_ID_FORMAT = DOMAIN + '.{}'
 _LOGGER = logging.getLogger(__name__)
 
-CONF_NAME = 'name'
 CONF_INITIAL = 'initial'
 CONF_MIN = 'min'
 CONF_MAX = 'max'
-CONF_ICON = 'icon'
 CONF_STEP = 'step'
 
 ATTR_VALUE = 'value'
@@ -38,6 +37,37 @@ SERVICE_SELECT_VALUE_SCHEMA = vol.Schema({
 })
 
 
+def _cv_input_slider(cfg):
+    """Config validation helper for input slider (Voluptuous)."""
+    minimum = cfg.get(CONF_MIN)
+    maximum = cfg.get(CONF_MAX)
+    if minimum >= maximum:
+        raise vol.Invalid('Maximum ({}) is not greater than minimum ({})'
+                          .format(minimum, maximum))
+    state = cfg.get(CONF_INITIAL, minimum)
+    if state < minimum or state > maximum:
+        raise vol.Invalid('Initial value {} not in range {}-{}'
+                          .format(state, minimum, maximum))
+    cfg[CONF_INITIAL] = state
+    return cfg
+
+
+CONFIG_SCHEMA = vol.Schema({
+    DOMAIN: vol.Schema({
+        cv.slug: vol.All({
+            vol.Optional(CONF_NAME): cv.string,
+            vol.Required(CONF_MIN): vol.Coerce(float),
+            vol.Required(CONF_MAX): vol.Coerce(float),
+            vol.Optional(CONF_INITIAL): vol.Coerce(float),
+            vol.Optional(CONF_STEP, default=1): vol.All(vol.Coerce(float),
+                                                        vol.Range(min=1e-3)),
+            vol.Optional(CONF_ICON): cv.icon,
+            vol.Optional(ATTR_UNIT_OF_MEASUREMENT): cv.string
+        }, _cv_input_slider)
+    })
+}, required=True, extra=vol.ALLOW_EXTRA)
+
+
 def select_value(hass, entity_id, value):
     """Set input_slider to value."""
     hass.services.call(DOMAIN, SERVICE_SELECT_VALUE, {
@@ -46,37 +76,21 @@ def select_value(hass, entity_id, value):
     })
 
 
-def setup(hass, config):
+@asyncio.coroutine
+def async_setup(hass, config):
     """Set up input slider."""
-    if not isinstance(config.get(DOMAIN), dict):
-        _LOGGER.error('Expected %s config to be a dictionary', DOMAIN)
-        return False
-
     component = EntityComponent(_LOGGER, DOMAIN, hass)
 
     entities = []
 
     for object_id, cfg in config[DOMAIN].items():
-        if object_id != slugify(object_id):
-            _LOGGER.warning("Found invalid key for boolean input: %s. "
-                            "Use %s instead", object_id, slugify(object_id))
-            continue
-        if not cfg:
-            _LOGGER.warning("No configuration specified for %s", object_id)
-            continue
-
         name = cfg.get(CONF_NAME)
         minimum = cfg.get(CONF_MIN)
         maximum = cfg.get(CONF_MAX)
         state = cfg.get(CONF_INITIAL, minimum)
-        step = cfg.get(CONF_STEP, 1)
+        step = cfg.get(CONF_STEP)
         icon = cfg.get(CONF_ICON)
         unit = cfg.get(ATTR_UNIT_OF_MEASUREMENT)
-
-        if state < minimum:
-            state = minimum
-        if state > maximum:
-            state = maximum
 
         entities.append(InputSlider(object_id, name, state, minimum, maximum,
                                     step, icon, unit))
@@ -84,26 +98,27 @@ def setup(hass, config):
     if not entities:
         return False
 
-    def select_value_service(call):
+    @asyncio.coroutine
+    def async_select_value_service(call):
         """Handle a calls to the input slider services."""
-        target_inputs = component.extract_from_service(call)
+        target_inputs = component.async_extract_from_service(call)
 
-        for input_slider in target_inputs:
-            input_slider.select_value(call.data[ATTR_VALUE])
+        tasks = [input_slider.async_select_value(call.data[ATTR_VALUE])
+                 for input_slider in target_inputs]
+        if tasks:
+            yield from asyncio.wait(tasks, loop=hass.loop)
 
-    hass.services.register(DOMAIN, SERVICE_SELECT_VALUE,
-                           select_value_service,
-                           schema=SERVICE_SELECT_VALUE_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, SERVICE_SELECT_VALUE, async_select_value_service,
+        schema=SERVICE_SELECT_VALUE_SCHEMA)
 
-    component.add_entities(entities)
-
+    yield from component.async_add_entities(entities)
     return True
 
 
 class InputSlider(Entity):
     """Represent an slider."""
 
-    # pylint: disable=too-many-arguments, too-many-instance-attributes
     def __init__(self, object_id, name, state, minimum, maximum, step, icon,
                  unit):
         """Initialize a select input."""
@@ -150,7 +165,8 @@ class InputSlider(Entity):
             ATTR_STEP: self._step
         }
 
-    def select_value(self, value):
+    @asyncio.coroutine
+    def async_select_value(self, value):
         """Select new value."""
         num_value = float(value)
         if num_value < self._minimum or num_value > self._maximum:
@@ -158,4 +174,4 @@ class InputSlider(Entity):
                             num_value, self._minimum, self._maximum)
             return
         self._current_value = num_value
-        self.update_ha_state()
+        yield from self.async_update_ha_state()

@@ -9,32 +9,33 @@ import logging
 
 from requests import RequestException
 import voluptuous as vol
+
 import homeassistant.helpers.config_validation as cv
 from homeassistant.components.media_player import (
-    SUPPORT_NEXT_TRACK, SUPPORT_PAUSE, SUPPORT_PREVIOUS_TRACK,
+    SUPPORT_NEXT_TRACK, SUPPORT_PAUSE, SUPPORT_PREVIOUS_TRACK, PLATFORM_SCHEMA,
     SUPPORT_TURN_OFF, SUPPORT_VOLUME_MUTE, SUPPORT_VOLUME_STEP,
-    SUPPORT_SELECT_SOURCE, MEDIA_TYPE_CHANNEL, MediaPlayerDevice)
+    SUPPORT_SELECT_SOURCE, SUPPORT_PLAY, MEDIA_TYPE_CHANNEL, MediaPlayerDevice)
 from homeassistant.const import (
-    CONF_PLATFORM, CONF_HOST, CONF_NAME, CONF_ACCESS_TOKEN,
+    CONF_HOST, CONF_NAME, CONF_ACCESS_TOKEN,
     STATE_OFF, STATE_PLAYING, STATE_PAUSED, STATE_UNKNOWN)
 import homeassistant.util as util
-
-_LOGGER = logging.getLogger(__name__)
 
 REQUIREMENTS = ['https://github.com/wokar/pylgnetcast/archive/'
                 'v0.2.0.zip#pylgnetcast==0.2.0']
 
-SUPPORT_LGTV = SUPPORT_PAUSE | SUPPORT_VOLUME_STEP | \
-               SUPPORT_VOLUME_MUTE | SUPPORT_PREVIOUS_TRACK | \
-               SUPPORT_NEXT_TRACK | SUPPORT_TURN_OFF | SUPPORT_SELECT_SOURCE
-
-MIN_TIME_BETWEEN_SCANS = timedelta(seconds=10)
-MIN_TIME_BETWEEN_FORCED_SCANS = timedelta(seconds=1)
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAME = 'LG TV Remote'
 
-PLATFORM_SCHEMA = vol.Schema({
-    vol.Required(CONF_PLATFORM): "lg_netcast",
+MIN_TIME_BETWEEN_FORCED_SCANS = timedelta(seconds=1)
+MIN_TIME_BETWEEN_SCANS = timedelta(seconds=10)
+
+SUPPORT_LGTV = SUPPORT_PAUSE | SUPPORT_VOLUME_STEP | \
+               SUPPORT_VOLUME_MUTE | SUPPORT_PREVIOUS_TRACK | \
+               SUPPORT_NEXT_TRACK | SUPPORT_TURN_OFF | \
+               SUPPORT_SELECT_SOURCE | SUPPORT_PLAY
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Required(CONF_HOST): cv.string,
     vol.Optional(CONF_ACCESS_TOKEN, default=None):
@@ -46,12 +47,12 @@ PLATFORM_SCHEMA = vol.Schema({
 def setup_platform(hass, config, add_devices, discovery_info=None):
     """Setup the LG TV platform."""
     from pylgnetcast import LgNetCastClient
-    client = LgNetCastClient(config[CONF_HOST], config[CONF_ACCESS_TOKEN])
+    client = LgNetCastClient(config.get(CONF_HOST),
+                             config.get(CONF_ACCESS_TOKEN))
+
     add_devices([LgTVDevice(client, config[CONF_NAME])])
 
 
-# pylint: disable=too-many-public-methods, abstract-method
-# pylint: disable=too-many-instance-attributes
 class LgTVDevice(MediaPlayerDevice):
     """Representation of a LG TV."""
 
@@ -101,8 +102,11 @@ class LgTVDevice(MediaPlayerDevice):
 
                 channel_list = client.query_data('channel_list')
                 if channel_list:
-                    channel_names = [str(c.find('chname').text) for
-                                     c in channel_list]
+                    channel_names = []
+                    for channel in channel_list:
+                        channel_name = channel.find('chname')
+                        if channel_name is not None:
+                            channel_names.append(str(channel_name.text))
                     self._sources = dict(zip(channel_names, channel_list))
                     # sort source names by the major channel number
                     source_tuples = [(k, self._sources[k].find('major').text)
@@ -159,8 +163,8 @@ class LgTVDevice(MediaPlayerDevice):
         return self._program_name
 
     @property
-    def supported_media_commands(self):
-        """Flag of media commands that are supported."""
+    def supported_features(self):
+        """Flag media player features that are supported."""
         return SUPPORT_LGTV
 
     @property

@@ -13,9 +13,11 @@ import json
 from urllib.parse import unquote
 
 import requests
+import voluptuous as vol
 
-from homeassistant.helpers import validate_config
-from homeassistant.components.device_tracker import DOMAIN
+import homeassistant.helpers.config_validation as cv
+from homeassistant.components.device_tracker import (
+    DOMAIN, PLATFORM_SCHEMA, DeviceScanner)
 from homeassistant.const import CONF_HOST
 from homeassistant.util import Throttle
 
@@ -26,25 +28,25 @@ _LOGGER = logging.getLogger(__name__)
 
 _MAC_REGEX = re.compile(r'(([0-9A-Fa-f]{1,2}\:){5}[0-9A-Fa-f]{1,2})')
 
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Required(CONF_HOST): cv.string
+})
+
 
 # pylint: disable=unused-argument
 def get_scanner(hass, config):
     """Return a BT Home Hub 5 scanner if successful."""
-    if not validate_config(config,
-                           {DOMAIN: [CONF_HOST]},
-                           _LOGGER):
-        return None
     scanner = BTHomeHub5DeviceScanner(config[DOMAIN])
 
     return scanner if scanner.success_init else None
 
 
-class BTHomeHub5DeviceScanner(object):
+class BTHomeHub5DeviceScanner(DeviceScanner):
     """This class queries a BT Home Hub 5."""
 
     def __init__(self, config):
         """Initialise the scanner."""
-        _LOGGER.info("Initialising BT Home Hub 5")
+        _LOGGER.info('Initialising BT Home Hub 5')
         self.host = config.get(CONF_HOST, '192.168.1.254')
 
         self.lock = threading.Lock()
@@ -85,7 +87,7 @@ class BTHomeHub5DeviceScanner(object):
             return False
 
         with self.lock:
-            _LOGGER.info("Scanning")
+            _LOGGER.info('Scanning')
 
             data = _get_homehub_data(self.url)
 

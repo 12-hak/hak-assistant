@@ -1,7 +1,13 @@
 """Helpers for config validation using voluptuous."""
-from datetime import timedelta
+from collections import OrderedDict
+from datetime import timedelta, datetime as datetime_sys
+import os
+import re
+from urllib.parse import urlparse
+from socket import _GLOBAL_DEFAULT_TIMEOUT
 
-import jinja2
+from typing import Any, Union, TypeVar, Callable, Sequence, Dict
+
 import voluptuous as vol
 
 from homeassistant.loader import get_platform
@@ -10,9 +16,11 @@ from homeassistant.const import (
     CONF_ALIAS, CONF_ENTITY_ID, CONF_VALUE_TEMPLATE, WEEKDAYS,
     CONF_CONDITION, CONF_BELOW, CONF_ABOVE, SUN_EVENT_SUNSET,
     SUN_EVENT_SUNRISE, CONF_UNIT_SYSTEM_IMPERIAL, CONF_UNIT_SYSTEM_METRIC)
-from homeassistant.helpers.entity import valid_entity_id
+from homeassistant.core import valid_entity_id
+from homeassistant.exceptions import TemplateError
 import homeassistant.util.dt as dt_util
-from homeassistant.util import slugify
+from homeassistant.util import slugify as util_slugify
+from homeassistant.helpers import template as template_helper
 
 # pylint: disable=invalid-name
 
@@ -27,13 +35,17 @@ latitude = vol.All(vol.Coerce(float), vol.Range(min=-90, max=90),
 longitude = vol.All(vol.Coerce(float), vol.Range(min=-180, max=180),
                     msg='invalid longitude')
 sun_event = vol.All(vol.Lower, vol.Any(SUN_EVENT_SUNSET, SUN_EVENT_SUNRISE))
+port = vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))
+
+# typing typevar
+T = TypeVar('T')
 
 
 # Adapted from:
 # https://github.com/alecthomas/voluptuous/issues/115#issuecomment-144464666
-def has_at_least_one_key(*keys):
+def has_at_least_one_key(*keys: str) -> Callable:
     """Validator that at least one key exists."""
-    def validate(obj):
+    def validate(obj: Dict) -> Dict:
         """Test keys exist in dict."""
         if not isinstance(obj, dict):
             raise vol.Invalid('expected dictionary')
@@ -46,7 +58,7 @@ def has_at_least_one_key(*keys):
     return validate
 
 
-def boolean(value):
+def boolean(value: Any) -> bool:
     """Validate and coerce a boolean value."""
     if isinstance(value, str):
         value = value.lower()
@@ -58,17 +70,36 @@ def boolean(value):
     return bool(value)
 
 
-def isfile(value):
+def isdevice(value):
+    """Validate that value is a real device."""
+    try:
+        os.stat(value)
+        return str(value)
+    except OSError:
+        raise vol.Invalid('No device at {} found'.format(value))
+
+
+def isfile(value: Any) -> str:
     """Validate that the value is an existing file."""
-    return vol.IsFile('not a file')(value)
+    if value is None:
+        raise vol.Invalid('None is not file')
+    file_in = os.path.expanduser(str(value))
+
+    if not os.path.isfile(file_in):
+        raise vol.Invalid('not a file')
+    if not os.access(file_in, os.R_OK):
+        raise vol.Invalid('file not readable')
+    return file_in
 
 
-def ensure_list(value):
+def ensure_list(value: Union[T, Sequence[T]]) -> Sequence[T]:
     """Wrap value in list if it is not one."""
+    if value is None:
+        return []
     return value if isinstance(value, list) else [value]
 
 
-def entity_id(value):
+def entity_id(value: Any) -> str:
     """Validate Entity ID."""
     value = string(value).lower()
     if valid_entity_id(value):
@@ -76,7 +107,7 @@ def entity_id(value):
     raise vol.Invalid('Entity ID {} is an invalid entity id'.format(value))
 
 
-def entity_ids(value):
+def entity_ids(value: Union[str, Sequence]) -> Sequence[str]:
     """Validate Entity IDs."""
     if value is None:
         raise vol.Invalid('Entity IDs can not be None')
@@ -84,6 +115,11 @@ def entity_ids(value):
         value = [ent_id.strip() for ent_id in value.split(',')]
 
     return [entity_id(ent_id) for ent_id in value]
+
+
+def enum(enumClass):
+    """Create validator for specified enum."""
+    return vol.All(vol.In(enumClass.__members__), enumClass.__getitem__)
 
 
 def icon(value):
@@ -109,7 +145,7 @@ time_period_dict = vol.All(
     lambda value: timedelta(**value))
 
 
-def time_period_str(value):
+def time_period_str(value: str) -> timedelta:
     """Validate and transform time offset."""
     if isinstance(value, int):
         raise vol.Invalid('Make sure you wrap time values in quotes')
@@ -144,24 +180,16 @@ def time_period_str(value):
     return offset
 
 
-time_period = vol.Any(time_period_str, timedelta, time_period_dict)
+def time_period_seconds(value: Union[int, str]) -> timedelta:
+    """Validate and transform seconds to a time offset."""
+    try:
+        return timedelta(seconds=int(value))
+    except (ValueError, TypeError):
+        raise vol.Invalid('Expected seconds, got {}'.format(value))
 
 
-def log_exception(logger, ex, domain, config):
-    """Generate log exception for config validation."""
-    message = 'Invalid config for [{}]: '.format(domain)
-    if 'extra keys not allowed' in ex.error_message:
-        message += '[{}] is an invalid option for [{}]. Check: {}->{}.'\
-                   .format(ex.path[-1], domain, domain,
-                           '->'.join('%s' % m for m in ex.path))
-    else:
-        message += str(ex)
-
-    if hasattr(config, '__line__'):
-        message += " (See {}:{})".format(config.__config_file__,
-                                         config.__line__ or '?')
-
-    logger.error(message)
+time_period = vol.Any(time_period_str, time_period_seconds, timedelta,
+                      time_period_dict)
 
 
 def match_all(value):
@@ -182,7 +210,7 @@ def platform_validator(domain):
     return validator
 
 
-def positive_timedelta(value):
+def positive_timedelta(value: timedelta) -> timedelta:
     """Validate timedelta is positive."""
     if value < timedelta(0):
         raise vol.Invalid('Time period should be positive')
@@ -203,20 +231,30 @@ def slug(value):
     if value is None:
         raise vol.Invalid('Slug should not be None')
     value = str(value)
-    slg = slugify(value)
+    slg = util_slugify(value)
     if value == slg:
         return value
     raise vol.Invalid('invalid slug {} (try {})'.format(value, slg))
 
 
-def string(value):
+def slugify(value):
+    """Coerce a value to a slug."""
+    if value is None:
+        raise vol.Invalid('Slug should not be None')
+    slg = util_slugify(str(value))
+    if len(slg) > 0:
+        return slg
+    raise vol.Invalid('Unable to slugify {}'.format(value))
+
+
+def string(value: Any) -> str:
     """Coerce value to string, except for None."""
     if value is not None:
         return str(value)
     raise vol.Invalid('string value is None')
 
 
-def temperature_unit(value):
+def temperature_unit(value) -> str:
     """Validate and transform temperature unit."""
     value = str(value).upper()
     if value == 'C':
@@ -234,13 +272,30 @@ def template(value):
     """Validate a jinja2 template."""
     if value is None:
         raise vol.Invalid('template value is None')
+    elif isinstance(value, (list, dict, template_helper.Template)):
+        raise vol.Invalid('template value should be a string')
 
-    value = str(value)
+    value = template_helper.Template(str(value))
+
     try:
-        jinja2.Environment().parse(value)
+        value.ensure_valid()
         return value
-    except jinja2.exceptions.TemplateSyntaxError as ex:
+    except TemplateError as ex:
         raise vol.Invalid('invalid template ({})'.format(ex))
+
+
+def template_complex(value):
+    """Validate a complex jinja2 template."""
+    if isinstance(value, list):
+        for idx, element in enumerate(value):
+            value[idx] = template_complex(element)
+        return value
+    if isinstance(value, dict):
+        for key, element in value.items():
+            value[key] = template_complex(element)
+        return value
+
+    return template(value)
 
 
 def time(value):
@@ -253,6 +308,22 @@ def time(value):
     return time_val
 
 
+def datetime(value):
+    """Validate datetime."""
+    if isinstance(value, datetime_sys):
+        return value
+
+    try:
+        date_val = dt_util.parse_datetime(value)
+    except TypeError:
+        date_val = None
+
+    if date_val is None:
+        raise vol.Invalid('Invalid datetime specified: {}'.format(value))
+
+    return date_val
+
+
 def time_zone(value):
     """Validate timezone."""
     if dt_util.get_time_zone(value) is not None:
@@ -261,7 +332,75 @@ def time_zone(value):
         'Invalid time zone passed in. Valid options can be found here: '
         'http://en.wikipedia.org/wiki/List_of_tz_database_time_zones')
 
+
 weekdays = vol.All(ensure_list, [vol.In(WEEKDAYS)])
+
+
+def socket_timeout(value):
+    """Validate timeout float > 0.0.
+
+    None coerced to socket._GLOBAL_DEFAULT_TIMEOUT bare object.
+    """
+    if value is None:
+        return _GLOBAL_DEFAULT_TIMEOUT
+    else:
+        try:
+            float_value = float(value)
+            if float_value > 0.0:
+                return float_value
+            raise vol.Invalid('Invalid socket timeout value.'
+                              ' float > 0.0 required.')
+        except Exception as _:
+            raise vol.Invalid('Invalid socket timeout: {err}'.format(err=_))
+
+
+# pylint: disable=no-value-for-parameter
+def url(value: Any) -> str:
+    """Validate an URL."""
+    url_in = str(value)
+
+    if urlparse(url_in).scheme in ['http', 'https']:
+        return vol.Schema(vol.Url())(url_in)
+
+    raise vol.Invalid('invalid url')
+
+
+def x10_address(value):
+    """Validate an x10 address."""
+    regex = re.compile(r'([A-Pa-p]{1})(?:[2-9]|1[0-6]?)$')
+    if not regex.match(value):
+        raise vol.Invalid('Invalid X10 Address')
+    return str(value).lower()
+
+
+def ordered_dict(value_validator, key_validator=match_all):
+    """Validate an ordered dict validator that maintains ordering.
+
+    value_validator will be applied to each value of the dictionary.
+    key_validator (optional) will be applied to each key of the dictionary.
+    """
+    item_validator = vol.Schema({key_validator: value_validator})
+
+    def validator(value):
+        """Validate ordered dict."""
+        config = OrderedDict()
+
+        if not isinstance(value, dict):
+            raise vol.Invalid('Value {} is not a dictionary'.format(value))
+        for key, val in value.items():
+            v_res = item_validator({key: val})
+            config.update(v_res)
+
+        return config
+
+    return validator
+
+
+def ensure_list_csv(value: Any) -> Sequence:
+    """Ensure that input is a list or make one from comma-separated string."""
+    if isinstance(value, str):
+        return [member.strip() for member in value.split(',')]
+    return ensure_list(value)
 
 
 # Validator helpers
@@ -284,7 +423,7 @@ def key_dependency(key, dependency):
 
 PLATFORM_SCHEMA = vol.Schema({
     vol.Required(CONF_PLATFORM): string,
-    CONF_SCAN_INTERVAL: vol.All(vol.Coerce(int), vol.Range(min=1)),
+    vol.Optional(CONF_SCAN_INTERVAL): time_period
 }, extra=vol.ALLOW_EXTRA)
 
 EVENT_SCHEMA = vol.Schema({
@@ -298,7 +437,7 @@ SERVICE_SCHEMA = vol.All(vol.Schema({
     vol.Exclusive('service', 'service name'): service,
     vol.Exclusive('service_template', 'service name'): template,
     vol.Optional('data'): dict,
-    vol.Optional('data_template'): {match_all: template},
+    vol.Optional('data_template'): {match_all: template_complex},
     vol.Optional(CONF_ENTITY_ID): entity_ids,
 }), has_at_least_one_key('service', 'service_template'))
 

@@ -6,11 +6,15 @@ https://home-assistant.io/components/wemo/
 """
 import logging
 
+import voluptuous as vol
+
 from homeassistant.components.discovery import SERVICE_WEMO
 from homeassistant.helpers import discovery
+from homeassistant.helpers import config_validation as cv
+
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
-REQUIREMENTS = ['pywemo==0.4.3']
+REQUIREMENTS = ['pywemo==0.4.11']
 
 DOMAIN = 'wemo'
 
@@ -21,13 +25,22 @@ WEMO_MODEL_DISPATCH = {
     'Maker':   'switch',
     'Sensor':  'binary_sensor',
     'Socket':  'switch',
-    'LightSwitch': 'switch'
+    'LightSwitch': 'switch',
+    'CoffeeMaker': 'switch'
 }
 
 SUBSCRIPTION_REGISTRY = None
 KNOWN_DEVICES = []
 
 _LOGGER = logging.getLogger(__name__)
+
+CONF_STATIC = 'static'
+
+CONFIG_SCHEMA = vol.Schema({
+    DOMAIN: vol.Schema({
+        vol.Optional(CONF_STATIC, default=[]): vol.Schema([cv.string])
+    }),
+}, extra=vol.ALLOW_EXTRA)
 
 
 # pylint: disable=unused-argument, too-many-function-args
@@ -69,7 +82,7 @@ def setup(hass, config):
 
     # Add static devices from the config file.
     devices.extend((address, None)
-                   for address in config.get(DOMAIN, {}).get('static', []))
+                   for address in config.get(DOMAIN, {}).get(CONF_STATIC, []))
 
     for address, device in devices:
         port = pywemo.ouimeaux_device.probe_wemo(address)

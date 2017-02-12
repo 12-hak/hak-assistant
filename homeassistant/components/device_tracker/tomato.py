@@ -11,10 +11,12 @@ import threading
 from datetime import timedelta
 
 import requests
+import voluptuous as vol
 
-from homeassistant.components.device_tracker import DOMAIN
+import homeassistant.helpers.config_validation as cv
+from homeassistant.components.device_tracker import (
+    DOMAIN, PLATFORM_SCHEMA, DeviceScanner)
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.helpers import validate_config
 from homeassistant.util import Throttle
 
 # Return cached results if last scan was less then this time ago.
@@ -24,19 +26,20 @@ CONF_HTTP_ID = "http_id"
 
 _LOGGER = logging.getLogger(__name__)
 
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Required(CONF_HOST): cv.string,
+    vol.Required(CONF_PASSWORD): cv.string,
+    vol.Required(CONF_USERNAME): cv.string,
+    vol.Required(CONF_HTTP_ID): cv.string
+})
+
 
 def get_scanner(hass, config):
     """Validate the configuration and returns a Tomato scanner."""
-    if not validate_config(config,
-                           {DOMAIN: [CONF_HOST, CONF_USERNAME,
-                                     CONF_PASSWORD, CONF_HTTP_ID]},
-                           _LOGGER):
-        return None
-
     return TomatoDeviceScanner(config[DOMAIN])
 
 
-class TomatoDeviceScanner(object):
+class TomatoDeviceScanner(DeviceScanner):
     """This class queries a wireless router running Tomato firmware."""
 
     def __init__(self, config):

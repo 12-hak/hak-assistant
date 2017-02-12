@@ -14,7 +14,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.helpers.entity import Entity
 from homeassistant.const import (ATTR_ENTITY_ID, TEMP_CELSIUS)
 
-REQUIREMENTS = ['pyRFXtrx==0.9.0']
+REQUIREMENTS = ['pyRFXtrx==0.17.0']
 
 DOMAIN = "rfxtrx"
 
@@ -34,6 +34,7 @@ EVENT_BUTTON_PRESSED = 'button_pressed'
 
 DATA_TYPES = OrderedDict([
     ('Temperature', TEMP_CELSIUS),
+    ('Temperature2', TEMP_CELSIUS),
     ('Humidity', '%'),
     ('Barometer', ''),
     ('Wind direction', ''),
@@ -42,7 +43,7 @@ DATA_TYPES = OrderedDict([
     ('Total usage', 'W'),
     ('Sound', ''),
     ('Sensor Status', ''),
-    ('Unknown', '')])
+    ('Counter value', '')])
 
 RECEIVED_EVT_SUBSCRIBERS = []
 RFX_DEVICES = {}
@@ -66,6 +67,7 @@ def _valid_device(value, device_type):
             key = device.get('packetid')
             device.pop('packetid')
 
+        key = str(key)
         if not len(key) % 2 == 0:
             key = '0' + key
 
@@ -92,6 +94,7 @@ def valid_sensor(value):
 
 def _valid_light_switch(value):
     return _valid_device(value, "light_switch")
+
 
 DEVICE_SCHEMA = vol.Schema({
     vol.Required(ATTR_NAME): cv.string,
@@ -130,7 +133,12 @@ def setup(hass, config):
         # Log RFXCOM event
         if not event.device.id_string:
             return
-        _LOGGER.info("Receive RFXCOM event from %s", event.device)
+        _LOGGER.debug("Receive RFXCOM event from "
+                      "(Device_id: %s Class: %s Sub: %s, Pkt_id: %s)",
+                      slugify(event.device.id_string.lower()),
+                      event.device.__class__.__name__,
+                      event.device.subtype,
+                      "".join("{0:02x}".format(x) for x in event.data))
 
         # Callback to HA registered components.
         for subscriber in RECEIVED_EVT_SUBSCRIBERS:
@@ -148,13 +156,15 @@ def setup(hass, config):
 
     if dummy_connection:
         RFXOBJECT =\
-            rfxtrxmod.Core(device, handle_receive, debug=debug,
-                           transport_protocol=rfxtrxmod.DummyTransport2)
+            rfxtrxmod.Connect(device, handle_receive, debug=debug,
+                              transport_protocol=rfxtrxmod.DummyTransport2)
     else:
-        RFXOBJECT = rfxtrxmod.Core(device, handle_receive, debug=debug)
+        RFXOBJECT = rfxtrxmod.Connect(device, handle_receive, debug=debug)
 
     def _shutdown_rfxtrx(event):
+        """Close connection with RFXtrx."""
         RFXOBJECT.close_connection()
+
     hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, _shutdown_rfxtrx)
 
     return True
@@ -213,13 +223,14 @@ def get_new_device(event, config, device):
     if not config[ATTR_AUTOMATIC_ADD]:
         return
 
+    pkt_id = "".join("{0:02x}".format(x) for x in event.data)
     _LOGGER.info(
-        "Automatic add %s rfxtrx device (Class: %s Sub: %s)",
+        "Automatic add %s rfxtrx device (Class: %s Sub: %s Packet_id: %s)",
         device_id,
         event.device.__class__.__name__,
-        event.device.subtype
+        event.device.subtype,
+        pkt_id
     )
-    pkt_id = "".join("{0:02x}".format(x) for x in event.data)
     datas = {ATTR_STATE: False, ATTR_FIREEVENT: False}
     signal_repetitions = config[CONF_SIGNAL_REPETITIONS]
     new_device = device(pkt_id, event, datas,
@@ -236,7 +247,7 @@ def apply_received_command(event):
         return
 
     _LOGGER.debug(
-        "EntityID: %s device_update. Command: %s",
+        "Device_id: %s device_update. Command: %s",
         device_id,
         event.values['Command']
     )
@@ -265,13 +276,20 @@ def apply_received_command(event):
                 ATTR_STATE: event.values['Command'].lower()
             }
         )
+        _LOGGER.info(
+            "Rfxtrx fired event: (event_type: %s, %s: %s, %s: %s)",
+            EVENT_BUTTON_PRESSED,
+            ATTR_ENTITY_ID,
+            RFX_DEVICES[device_id].entity_id,
+            ATTR_STATE,
+            event.values['Command'].lower()
+        )
 
 
 class RfxtrxDevice(Entity):
     """Represents a Rfxtrx device.
 
     Contains the common logic for Rfxtrx lights and switches.
-
     """
 
     def __init__(self, name, event, datas, signal_repetitions):
@@ -319,7 +337,6 @@ class RfxtrxDevice(Entity):
         self.update_ha_state()
 
     def _send_command(self, command, brightness=0):
-        # pylint: disable=too-many-return-statements,too-many-branches
         if not self._event:
             return
 

@@ -6,34 +6,47 @@ https://home-assistant.io/components/media_player.cmus/
 """
 import logging
 
+import voluptuous as vol
+
+
 from homeassistant.components.media_player import (
     MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLIST, SUPPORT_NEXT_TRACK, SUPPORT_PAUSE,
-    SUPPORT_PREVIOUS_TRACK, SUPPORT_TURN_OFF, SUPPORT_TURN_ON,
-    SUPPORT_VOLUME_SET, SUPPORT_PLAY_MEDIA, SUPPORT_SEEK,
+    SUPPORT_PREVIOUS_TRACK, SUPPORT_TURN_OFF, SUPPORT_TURN_ON, SUPPORT_PLAY,
+    SUPPORT_VOLUME_SET, SUPPORT_PLAY_MEDIA, SUPPORT_SEEK, PLATFORM_SCHEMA,
     MediaPlayerDevice)
-from homeassistant.const import (STATE_OFF, STATE_PAUSED, STATE_PLAYING,
-                                 CONF_HOST, CONF_NAME, CONF_PASSWORD,
-                                 CONF_PORT)
+from homeassistant.const import (
+    STATE_OFF, STATE_PAUSED, STATE_PLAYING, CONF_HOST, CONF_NAME, CONF_PORT,
+    CONF_PASSWORD)
+import homeassistant.helpers.config_validation as cv
+
+REQUIREMENTS = ['pycmus==0.1.0']
 
 _LOGGER = logging.getLogger(__name__)
-REQUIREMENTS = ['pycmus==0.1.0']
+
+DEFAULT_NAME = 'cmus'
+DEFAULT_PORT = 3000
 
 SUPPORT_CMUS = SUPPORT_PAUSE | SUPPORT_VOLUME_SET | SUPPORT_TURN_OFF |  \
     SUPPORT_TURN_ON | SUPPORT_PREVIOUS_TRACK | SUPPORT_NEXT_TRACK | \
-    SUPPORT_PLAY_MEDIA | SUPPORT_SEEK
+    SUPPORT_PLAY_MEDIA | SUPPORT_SEEK | SUPPORT_PLAY
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Inclusive(CONF_HOST, 'remote'): cv.string,
+    vol.Inclusive(CONF_PASSWORD, 'remote'): cv.string,
+    vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
+    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+})
 
 
 def setup_platform(hass, config, add_devices, discover_info=None):
     """Setup the CMUS platform."""
     from pycmus import exceptions
 
-    host = config.get(CONF_HOST, None)
-    password = config.get(CONF_PASSWORD, None)
-    port = config.get(CONF_PORT, None)
-    name = config.get(CONF_NAME, None)
-    if host and not password:
-        _LOGGER.error("A password must be set if using a remote cmus server")
-        return False
+    host = config.get(CONF_HOST)
+    password = config.get(CONF_PASSWORD)
+    port = config.get(CONF_PORT)
+    name = config.get(CONF_NAME)
+
     try:
         cmus_remote = CmusDevice(host, password, port, name)
     except exceptions.InvalidPassword:
@@ -43,21 +56,20 @@ def setup_platform(hass, config, add_devices, discover_info=None):
 
 
 class CmusDevice(MediaPlayerDevice):
-    """Representation of a running CMUS."""
+    """Representation of a running cmus."""
 
-    # pylint: disable=no-member, too-many-public-methods, abstract-method
+    # pylint: disable=no-member
     def __init__(self, server, password, port, name):
         """Initialize the CMUS device."""
         from pycmus import remote
 
         if server:
-            port = port or 3000
-            self.cmus = remote.PyCmus(server=server, password=password,
-                                      port=port)
-            auto_name = "cmus-%s" % server
+            self.cmus = remote.PyCmus(
+                server=server, password=password, port=port)
+            auto_name = 'cmus-{}'.format(server)
         else:
             self.cmus = remote.PyCmus()
-            auto_name = "cmus-local"
+            auto_name = 'cmus-local'
         self._name = name or auto_name
         self.status = {}
         self.update()
@@ -139,8 +151,8 @@ class CmusDevice(MediaPlayerDevice):
         return int(volume)/100
 
     @property
-    def supported_media_commands(self):
-        """Flag of media commands that are supported."""
+    def supported_features(self):
+        """Flag media player features that are supported."""
         return SUPPORT_CMUS
 
     def turn_off(self):

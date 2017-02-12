@@ -1,21 +1,36 @@
-"""Support for the DirecTV recievers."""
+"""
+Support for the DirecTV recievers.
+
+For more details about this platform, please refer to the documentation at
+https://home-assistant.io/components/media_player.directv/
+"""
+import voluptuous as vol
 
 from homeassistant.components.media_player import (
     MEDIA_TYPE_TVSHOW, MEDIA_TYPE_VIDEO, SUPPORT_PAUSE, SUPPORT_PLAY_MEDIA,
-    SUPPORT_TURN_OFF, SUPPORT_TURN_ON, SUPPORT_STOP,
-    SUPPORT_NEXT_TRACK, SUPPORT_PREVIOUS_TRACK, MediaPlayerDevice)
+    SUPPORT_TURN_OFF, SUPPORT_TURN_ON, SUPPORT_STOP, PLATFORM_SCHEMA,
+    SUPPORT_NEXT_TRACK, SUPPORT_PREVIOUS_TRACK, SUPPORT_PLAY,
+    MediaPlayerDevice)
 from homeassistant.const import (
-    CONF_HOST, CONF_NAME, STATE_OFF, STATE_PLAYING)
+    CONF_HOST, CONF_NAME, STATE_OFF, STATE_PLAYING, CONF_PORT)
+import homeassistant.helpers.config_validation as cv
 
 REQUIREMENTS = ['directpy==0.1']
 
+DEFAULT_NAME = 'DirecTV Receiver'
 DEFAULT_PORT = 8080
 
 SUPPORT_DTV = SUPPORT_PAUSE | SUPPORT_TURN_ON | SUPPORT_TURN_OFF | \
     SUPPORT_PLAY_MEDIA | SUPPORT_STOP | SUPPORT_NEXT_TRACK | \
-    SUPPORT_PREVIOUS_TRACK
+    SUPPORT_PREVIOUS_TRACK | SUPPORT_PLAY
 
 KNOWN_HOSTS = []
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Required(CONF_HOST): cv.string,
+    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+    vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
+})
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
@@ -34,8 +49,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
     elif CONF_HOST in config:
         hosts.append([
-            config.get(CONF_NAME, 'DirecTV Receiver'),
-            config[CONF_HOST], DEFAULT_PORT
+            config.get(CONF_NAME), config.get(CONF_HOST), config.get(CONF_PORT)
         ])
 
     dtvs = []
@@ -52,8 +66,6 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class DirecTvDevice(MediaPlayerDevice):
     """Representation of a DirecTV reciever on the network."""
 
-    # pylint: disable=abstract-method
-    # pylint: disable=too-many-public-methods
     def __init__(self, name, host, port):
         """Initialize the device."""
         from DirectPy import DIRECTV
@@ -121,8 +133,8 @@ class DirecTvDevice(MediaPlayerDevice):
                 return None
 
     @property
-    def supported_media_commands(self):
-        """Flag of media commands that are supported."""
+    def supported_features(self):
+        """Flag media player features that are supported."""
         return SUPPORT_DTV
 
     @property

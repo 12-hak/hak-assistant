@@ -6,35 +6,41 @@ https://home-assistant.io/components/alarm_control_panel.simplisafe/
 """
 import logging
 
+import voluptuous as vol
+
 import homeassistant.components.alarm_control_panel as alarm
-
+from homeassistant.components.alarm_control_panel import PLATFORM_SCHEMA
 from homeassistant.const import (
-    CONF_PASSWORD, CONF_USERNAME, STATE_UNKNOWN,
+    CONF_PASSWORD, CONF_USERNAME, STATE_UNKNOWN, CONF_CODE, CONF_NAME,
     STATE_ALARM_DISARMED, STATE_ALARM_ARMED_HOME, STATE_ALARM_ARMED_AWAY)
+import homeassistant.helpers.config_validation as cv
 
-_LOGGER = logging.getLogger(__name__)
 REQUIREMENTS = ['https://github.com/w1ll1am23/simplisafe-python/archive/'
                 '586fede0e85fd69e56e516aaa8e97eb644ca8866.zip#'
                 'simplisafe-python==0.0.1']
 
+_LOGGER = logging.getLogger(__name__)
+
+DEFAULT_NAME = 'SimpliSafe'
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Required(CONF_PASSWORD): cv.string,
+    vol.Required(CONF_USERNAME): cv.string,
+    vol.Optional(CONF_CODE): cv.string,
+    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+})
+
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     """Set up the SimpliSafe platform."""
+    name = config.get(CONF_NAME)
+    code = config.get(CONF_CODE)
     username = config.get(CONF_USERNAME)
     password = config.get(CONF_PASSWORD)
 
-    if username is None or password is None:
-        _LOGGER.error('Must specify username and password!')
-        return False
-
-    add_devices([SimpliSafeAlarm(
-        config.get('name', "SimpliSafe"),
-        username,
-        password,
-        config.get('code'))])
+    add_devices([SimpliSafeAlarm(name, username, password, code)])
 
 
-# pylint: disable=abstract-method
 class SimpliSafeAlarm(alarm.AlarmControlPanel):
     """Representation a SimpliSafe alarm."""
 
@@ -54,11 +60,6 @@ class SimpliSafeAlarm(alarm.AlarmControlPanel):
             self._state = STATE_ALARM_ARMED_AWAY
         else:
             self._state = STATE_UNKNOWN
-
-    @property
-    def should_poll(self):
-        """Poll the SimpliSafe API."""
-        return True
 
     @property
     def name(self):
@@ -98,7 +99,6 @@ class SimpliSafeAlarm(alarm.AlarmControlPanel):
             return
         self.simplisafe.set_state('off')
         _LOGGER.info('SimpliSafe alarm disarming')
-        self.update()
 
     def alarm_arm_home(self, code=None):
         """Send arm home command."""
@@ -106,7 +106,6 @@ class SimpliSafeAlarm(alarm.AlarmControlPanel):
             return
         self.simplisafe.set_state('home')
         _LOGGER.info('SimpliSafe alarm arming home')
-        self.update()
 
     def alarm_arm_away(self, code=None):
         """Send arm away command."""
@@ -114,7 +113,6 @@ class SimpliSafeAlarm(alarm.AlarmControlPanel):
             return
         self.simplisafe.set_state('away')
         _LOGGER.info('SimpliSafe alarm arming away')
-        self.update()
 
     def _validate_code(self, code, state):
         """Validate given code."""

@@ -7,19 +7,18 @@ https://home-assistant.io/components/lock.vera/
 import logging
 
 from homeassistant.components.lock import LockDevice
-from homeassistant.const import (
-    STATE_LOCKED, STATE_UNLOCKED)
+from homeassistant.const import (STATE_LOCKED, STATE_UNLOCKED)
 from homeassistant.components.vera import (
     VeraDevice, VERA_DEVICES, VERA_CONTROLLER)
 
-DEPENDENCIES = ['vera']
-
 _LOGGER = logging.getLogger(__name__)
 
+DEPENDENCIES = ['vera']
 
-def setup_platform(hass, config, add_devices_callback, discovery_info=None):
+
+def setup_platform(hass, config, add_devices, discovery_info=None):
     """Find and return Vera locks."""
-    add_devices_callback(
+    add_devices(
         VeraLock(device, VERA_CONTROLLER) for
         device in VERA_DEVICES['lock'])
 
@@ -36,13 +35,11 @@ class VeraLock(VeraDevice, LockDevice):
         """Lock the device."""
         self.vera_device.lock()
         self._state = STATE_LOCKED
-        self.update_ha_state()
 
     def unlock(self, **kwargs):
         """Unlock the device."""
         self.vera_device.unlock()
         self._state = STATE_UNLOCKED
-        self.update_ha_state()
 
     @property
     def is_locked(self):

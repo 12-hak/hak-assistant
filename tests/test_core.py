@@ -1,94 +1,226 @@
 """Test to verify that Home Assistant core works."""
-# pylint: disable=protected-access,too-many-public-methods
-# pylint: disable=too-few-public-methods
-import os
-import signal
+# pylint: disable=protected-access
+import asyncio
 import unittest
-from unittest.mock import patch
-import time
-import threading
+from unittest.mock import patch, MagicMock, sentinel
 from datetime import datetime, timedelta
 
 import pytz
+import pytest
 
 import homeassistant.core as ha
-from homeassistant.exceptions import (
-    HomeAssistantError, InvalidEntityFormatError)
+from homeassistant.exceptions import InvalidEntityFormatError
+from homeassistant.util.async import run_coroutine_threadsafe
 import homeassistant.util.dt as dt_util
-from homeassistant.helpers.unit_system import (METRIC_SYSTEM)
+from homeassistant.util.unit_system import (METRIC_SYSTEM)
 from homeassistant.const import (
-    __version__, EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP,
-    EVENT_STATE_CHANGED, ATTR_FRIENDLY_NAME, CONF_UNIT_SYSTEM)
+    __version__, EVENT_STATE_CHANGED, ATTR_FRIENDLY_NAME, CONF_UNIT_SYSTEM,
+    ATTR_NOW, EVENT_TIME_CHANGED, EVENT_HOMEASSISTANT_STOP,
+    EVENT_HOMEASSISTANT_START)
 
 from tests.common import get_test_home_assistant
 
 PST = pytz.timezone('America/Los_Angeles')
 
 
+def test_split_entity_id():
+    """Test split_entity_id."""
+    assert ha.split_entity_id('domain.object_id') == ['domain', 'object_id']
+
+
+def test_async_add_job_schedule_callback():
+    """Test that we schedule coroutines and add jobs to the job pool."""
+    hass = MagicMock()
+    job = MagicMock()
+
+    ha.HomeAssistant.async_add_job(hass, ha.callback(job))
+    assert len(hass.loop.call_soon.mock_calls) == 1
+    assert len(hass.loop.create_task.mock_calls) == 0
+    assert len(hass.add_job.mock_calls) == 0
+
+
+@patch('asyncio.iscoroutinefunction', return_value=True)
+def test_async_add_job_schedule_coroutinefunction(mock_iscoro):
+    """Test that we schedule coroutines and add jobs to the job pool."""
+    hass = MagicMock()
+    job = MagicMock()
+
+    ha.HomeAssistant.async_add_job(hass, job)
+    assert len(hass.loop.call_soon.mock_calls) == 0
+    assert len(hass.loop.create_task.mock_calls) == 1
+    assert len(hass.add_job.mock_calls) == 0
+
+
+@patch('asyncio.iscoroutinefunction', return_value=False)
+def test_async_add_job_add_threaded_job_to_pool(mock_iscoro):
+    """Test that we schedule coroutines and add jobs to the job pool."""
+    hass = MagicMock()
+    job = MagicMock()
+
+    ha.HomeAssistant.async_add_job(hass, job)
+    assert len(hass.loop.call_soon.mock_calls) == 0
+    assert len(hass.loop.create_task.mock_calls) == 0
+    assert len(hass.loop.run_in_executor.mock_calls) == 1
+
+
+def test_async_run_job_calls_callback():
+    """Test that the callback annotation is respected."""
+    hass = MagicMock()
+    calls = []
+
+    def job():
+        calls.append(1)
+
+    ha.HomeAssistant.async_run_job(hass, ha.callback(job))
+    assert len(calls) == 1
+    assert len(hass.async_add_job.mock_calls) == 0
+
+
+def test_async_run_job_delegates_non_async():
+    """Test that the callback annotation is respected."""
+    hass = MagicMock()
+    calls = []
+
+    def job():
+        calls.append(1)
+
+    ha.HomeAssistant.async_run_job(hass, job)
+    assert len(calls) == 0
+    assert len(hass.async_add_job.mock_calls) == 1
+
+
 class TestHomeAssistant(unittest.TestCase):
     """Test the Home Assistant core classes."""
 
-    def setUp(self):     # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def setUp(self):
         """Setup things to be run when tests are started."""
         self.hass = get_test_home_assistant()
-        self.hass.states.set("light.Bowl", "on")
-        self.hass.states.set("switch.AC", "off")
 
-    def tearDown(self):  # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def tearDown(self):
         """Stop everything that was started."""
-        try:
-            self.hass.stop()
-        except HomeAssistantError:
-            # Already stopped after the block till stopped test
-            pass
+        self.hass.stop()
 
-    def test_start(self):
-        """Start the test."""
-        calls = []
-        self.hass.bus.listen_once(EVENT_HOMEASSISTANT_START,
-                                  lambda event: calls.append(1))
-        self.hass.start()
-        self.hass.pool.block_till_done()
-        self.assertEqual(1, len(calls))
+    # This test hangs on `loop.add_signal_handler`
+    # def test_start_and_sigterm(self):
+    #     """Start the test."""
+    #     calls = []
+    #     self.hass.bus.listen_once(EVENT_HOMEASSISTANT_START,
+    #                               lambda event: calls.append(1))
 
-    # @patch('homeassistant.core.time.sleep')
-    def test_block_till_stoped(self):
-        """Test if we can block till stop service is called."""
-        with patch('time.sleep'):
-            blocking_thread = threading.Thread(
-                target=self.hass.block_till_stopped)
+    #     self.hass.start()
 
-            self.assertFalse(blocking_thread.is_alive())
+    #     self.assertEqual(1, len(calls))
 
-            blocking_thread.start()
+    #     self.hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP,
+    #                               lambda event: calls.append(1))
 
-            self.assertTrue(blocking_thread.is_alive())
+    #     os.kill(os.getpid(), signal.SIGTERM)
 
-            self.hass.services.call(ha.DOMAIN, ha.SERVICE_HOMEASSISTANT_STOP)
-            self.hass.pool.block_till_done()
+    #     self.hass.block_till_done()
 
-        # Wait for thread to stop
-        for _ in range(20):
-            if not blocking_thread.is_alive():
-                break
-            time.sleep(0.05)
+    #     self.assertEqual(1, len(calls))
 
-        self.assertFalse(blocking_thread.is_alive())
+    def test_pending_sheduler(self):
+        """Add a coro to pending tasks."""
+        call_count = []
 
-    def test_stopping_with_sigterm(self):
-        """Test for stopping with sigterm."""
-        calls = []
-        self.hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP,
-                                  lambda event: calls.append(1))
+        @asyncio.coroutine
+        def test_coro():
+            """Test Coro."""
+            call_count.append('call')
 
-        def send_sigterm(length):
-            """Send sigterm."""
-            os.kill(os.getpid(), signal.SIGTERM)
+        for i in range(3):
+            self.hass.add_job(test_coro())
 
-        with patch('homeassistant.core.time.sleep', send_sigterm):
-            self.hass.block_till_stopped()
+        run_coroutine_threadsafe(
+            asyncio.wait(self.hass._pending_tasks, loop=self.hass.loop),
+            loop=self.hass.loop
+        ).result()
 
-        self.assertEqual(1, len(calls))
+        assert len(self.hass._pending_tasks) == 3
+        assert len(call_count) == 3
+
+    def test_async_add_job_pending_tasks_coro(self):
+        """Add a coro to pending tasks."""
+        call_count = []
+
+        @asyncio.coroutine
+        def test_coro():
+            """Test Coro."""
+            call_count.append('call')
+
+        for i in range(2):
+            self.hass.add_job(test_coro())
+
+        @asyncio.coroutine
+        def wait_finish_callback():
+            """Wait until all stuff is scheduled."""
+            yield from asyncio.sleep(0, loop=self.hass.loop)
+            yield from asyncio.sleep(0, loop=self.hass.loop)
+
+        run_coroutine_threadsafe(
+            wait_finish_callback(), self.hass.loop).result()
+
+        assert len(self.hass._pending_tasks) == 2
+        self.hass.block_till_done()
+        assert len(call_count) == 2
+
+    def test_async_add_job_pending_tasks_executor(self):
+        """Run a executor in pending tasks."""
+        call_count = []
+
+        def test_executor():
+            """Test executor."""
+            call_count.append('call')
+
+        @asyncio.coroutine
+        def wait_finish_callback():
+            """Wait until all stuff is scheduled."""
+            yield from asyncio.sleep(0, loop=self.hass.loop)
+            yield from asyncio.sleep(0, loop=self.hass.loop)
+
+        for i in range(2):
+            self.hass.add_job(test_executor)
+
+        run_coroutine_threadsafe(
+            wait_finish_callback(), self.hass.loop).result()
+
+        assert len(self.hass._pending_tasks) == 2
+        self.hass.block_till_done()
+        assert len(call_count) == 2
+
+    def test_async_add_job_pending_tasks_callback(self):
+        """Run a callback in pending tasks."""
+        call_count = []
+
+        @ha.callback
+        def test_callback():
+            """Test callback."""
+            call_count.append('call')
+
+        @asyncio.coroutine
+        def wait_finish_callback():
+            """Wait until all stuff is scheduled."""
+            yield from asyncio.sleep(0, loop=self.hass.loop)
+            yield from asyncio.sleep(0, loop=self.hass.loop)
+
+        for i in range(2):
+            self.hass.add_job(test_callback)
+
+        run_coroutine_threadsafe(
+            wait_finish_callback(), self.hass.loop).result()
+
+        self.hass.block_till_done()
+
+        assert len(self.hass._pending_tasks) == 0
+        assert len(call_count) == 2
+
+    def test_add_job_with_none(self):
+        """Try to add a job with None as function."""
+        with pytest.raises(ValueError):
+            self.hass.add_job(None, 'test_arg')
 
 
 class TestEvent(unittest.TestCase):
@@ -136,49 +268,145 @@ class TestEvent(unittest.TestCase):
 class TestEventBus(unittest.TestCase):
     """Test EventBus methods."""
 
-    def setUp(self):     # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def setUp(self):
         """Setup things to be run when tests are started."""
-        self.bus = ha.EventBus(ha.create_worker_pool(0))
-        self.bus.listen('test_event', lambda x: len)
+        self.hass = get_test_home_assistant()
+        self.bus = self.hass.bus
 
-    def tearDown(self):  # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def tearDown(self):
         """Stop down stuff we started."""
-        self.bus._pool.stop()
+        self.hass.stop()
 
     def test_add_remove_listener(self):
         """Test remove_listener method."""
-        self.bus._pool.add_worker()
+        self.hass.allow_pool = False
         old_count = len(self.bus.listeners)
 
         def listener(_): pass
 
-        self.bus.listen('test', listener)
+        unsub = self.bus.listen('test', listener)
 
         self.assertEqual(old_count + 1, len(self.bus.listeners))
 
-        # Try deleting a non registered listener, nothing should happen
-        self.bus.remove_listener('test', lambda x: len)
-
         # Remove listener
-        self.bus.remove_listener('test', listener)
+        unsub()
         self.assertEqual(old_count, len(self.bus.listeners))
 
-        # Try deleting listener while category doesn't exist either
-        self.bus.remove_listener('test', listener)
+        # Should do nothing now
+        unsub()
 
-    def test_listen_once_event(self):
+    def test_unsubscribe_listener(self):
+        """Test unsubscribe listener from returned function."""
+        calls = []
+
+        @ha.callback
+        def listener(event):
+            """Mock listener."""
+            calls.append(event)
+
+        unsub = self.bus.listen('test', listener)
+
+        self.bus.fire('test')
+        self.hass.block_till_done()
+
+        assert len(calls) == 1
+
+        unsub()
+
+        self.bus.fire('event')
+        self.hass.block_till_done()
+
+        assert len(calls) == 1
+
+    def test_listen_once_event_with_callback(self):
         """Test listen_once_event method."""
         runs = []
 
-        self.bus.listen_once('test_event', lambda x: runs.append(1))
+        @ha.callback
+        def event_handler(event):
+            runs.append(event)
+
+        self.bus.listen_once('test_event', event_handler)
 
         self.bus.fire('test_event')
         # Second time it should not increase runs
         self.bus.fire('test_event')
 
-        self.bus._pool.add_worker()
-        self.bus._pool.block_till_done()
+        self.hass.block_till_done()
         self.assertEqual(1, len(runs))
+
+    def test_listen_once_event_with_coroutine(self):
+        """Test listen_once_event method."""
+        runs = []
+
+        @asyncio.coroutine
+        def event_handler(event):
+            runs.append(event)
+
+        self.bus.listen_once('test_event', event_handler)
+
+        self.bus.fire('test_event')
+        # Second time it should not increase runs
+        self.bus.fire('test_event')
+
+        self.hass.block_till_done()
+        self.assertEqual(1, len(runs))
+
+    def test_listen_once_event_with_thread(self):
+        """Test listen_once_event method."""
+        runs = []
+
+        def event_handler(event):
+            runs.append(event)
+
+        self.bus.listen_once('test_event', event_handler)
+
+        self.bus.fire('test_event')
+        # Second time it should not increase runs
+        self.bus.fire('test_event')
+
+        self.hass.block_till_done()
+        self.assertEqual(1, len(runs))
+
+    def test_thread_event_listener(self):
+        """Test a  event listener listeners."""
+        thread_calls = []
+
+        def thread_listener(event):
+            thread_calls.append(event)
+
+        self.bus.listen('test_thread', thread_listener)
+        self.bus.fire('test_thread')
+        self.hass.block_till_done()
+        assert len(thread_calls) == 1
+
+    def test_callback_event_listener(self):
+        """Test a  event listener listeners."""
+        callback_calls = []
+
+        @ha.callback
+        def callback_listener(event):
+            callback_calls.append(event)
+
+        self.bus.listen('test_callback', callback_listener)
+        self.bus.fire('test_callback')
+        self.hass.block_till_done()
+        assert len(callback_calls) == 1
+
+    def test_coroutine_event_listener(self):
+        """Test a  event listener listeners."""
+        coroutine_calls = []
+
+        @asyncio.coroutine
+        def coroutine_listener(event):
+            coroutine_calls.append(event)
+
+        self.bus.listen('test_coroutine', coroutine_listener)
+        self.bus.fire('test_coroutine')
+        self.hass.block_till_done()
+        assert len(coroutine_calls) == 1
 
 
 class TestState(unittest.TestCase):
@@ -240,17 +468,18 @@ class TestState(unittest.TestCase):
 class TestStateMachine(unittest.TestCase):
     """Test State machine methods."""
 
-    def setUp(self):    # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def setUp(self):
         """Setup things to be run when tests are started."""
-        self.pool = ha.create_worker_pool(0)
-        self.bus = ha.EventBus(self.pool)
-        self.states = ha.StateMachine(self.bus)
+        self.hass = get_test_home_assistant()
+        self.states = self.hass.states
         self.states.set("light.Bowl", "on")
         self.states.set("switch.AC", "off")
 
-    def tearDown(self):  # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def tearDown(self):
         """Stop down stuff we started."""
-        self.pool.stop()
+        self.hass.stop()
 
     def test_is_state(self):
         """Test is_state method."""
@@ -288,14 +517,17 @@ class TestStateMachine(unittest.TestCase):
 
     def test_remove(self):
         """Test remove method."""
-        self.pool.add_worker()
         events = []
-        self.bus.listen(EVENT_STATE_CHANGED,
-                        lambda event: events.append(event))
+
+        @ha.callback
+        def callback(event):
+            events.append(event)
+
+        self.hass.bus.listen(EVENT_STATE_CHANGED, callback)
 
         self.assertIn('light.bowl', self.states.entity_ids())
         self.assertTrue(self.states.remove('light.bowl'))
-        self.pool.block_till_done()
+        self.hass.block_till_done()
 
         self.assertNotIn('light.bowl', self.states.entity_ids())
         self.assertEqual(1, len(events))
@@ -306,18 +538,21 @@ class TestStateMachine(unittest.TestCase):
 
         # If it does not exist, we should get False
         self.assertFalse(self.states.remove('light.Bowl'))
-        self.pool.block_till_done()
+        self.hass.block_till_done()
         self.assertEqual(1, len(events))
 
     def test_case_insensitivty(self):
         """Test insensitivty."""
-        self.pool.add_worker()
         runs = []
 
-        self.bus.listen(EVENT_STATE_CHANGED, lambda event: runs.append(event))
+        @ha.callback
+        def callback(event):
+            runs.append(event)
+
+        self.hass.bus.listen(EVENT_STATE_CHANGED, callback)
 
         self.states.set('light.BOWL', 'off')
-        self.bus._pool.block_till_done()
+        self.hass.block_till_done()
 
         self.assertTrue(self.states.is_state('light.bowl', 'off'))
         self.assertEqual(1, len(runs))
@@ -330,22 +565,28 @@ class TestStateMachine(unittest.TestCase):
 
         with patch('homeassistant.util.dt.utcnow', return_value=future):
             self.states.set("light.Bowl", "on", {'attr': 'triggers_change'})
+            self.hass.block_till_done()
 
-        self.assertEqual(state.last_changed,
-                         self.states.get('light.Bowl').last_changed)
+        state2 = self.states.get('light.Bowl')
+        assert state2 is not None
+        assert state.last_changed == state2.last_changed
 
     def test_force_update(self):
         """Test force update option."""
-        self.pool.add_worker()
         events = []
-        self.bus.listen(EVENT_STATE_CHANGED, events.append)
+
+        @ha.callback
+        def callback(event):
+            events.append(event)
+
+        self.hass.bus.listen(EVENT_STATE_CHANGED, callback)
 
         self.states.set('light.bowl', 'on')
-        self.bus._pool.block_till_done()
+        self.hass.block_till_done()
         self.assertEqual(0, len(events))
 
         self.states.set('light.bowl', 'on', None, True)
-        self.bus._pool.block_till_done()
+        self.hass.block_till_done()
         self.assertEqual(1, len(events))
 
 
@@ -366,28 +607,27 @@ class TestServiceCall(unittest.TestCase):
 class TestServiceRegistry(unittest.TestCase):
     """Test ServicerRegistry methods."""
 
-    def setUp(self):     # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def setUp(self):
         """Setup things to be run when tests are started."""
-        self.pool = ha.create_worker_pool(0)
-        self.bus = ha.EventBus(self.pool)
+        self.hass = get_test_home_assistant()
+        self.services = self.hass.services
 
-        def add_job(*args, **kwargs):
-            """Forward calls to add_job on Home Assistant."""
-            # self works because we also have self.pool defined.
-            return ha.HomeAssistant.add_job(self, *args, **kwargs)
+        @ha.callback
+        def mock_service(call):
+            pass
 
-        self.services = ha.ServiceRegistry(self.bus, add_job)
-        self.services.register("test_domain", "test_service", lambda x: None)
+        self.services.register("Test_Domain", "TEST_SERVICE", mock_service)
 
-    def tearDown(self):  # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def tearDown(self):
         """Stop down stuff we started."""
-        if self.pool.worker_count:
-            self.pool.stop()
+        self.hass.stop()
 
     def test_has_service(self):
         """Test has_service method."""
         self.assertTrue(
-            self.services.has_service("test_domain", "test_service"))
+            self.services.has_service("tesT_domaiN", "tesT_servicE"))
         self.assertFalse(
             self.services.has_service("test_domain", "non_existing"))
         self.assertFalse(
@@ -402,100 +642,174 @@ class TestServiceRegistry(unittest.TestCase):
 
     def test_call_with_blocking_done_in_time(self):
         """Test call with blocking."""
-        self.pool.add_worker()
-        self.pool.add_worker()
         calls = []
+
+        @ha.callback
+        def service_handler(call):
+            """Service handler."""
+            calls.append(call)
+
         self.services.register("test_domain", "register_calls",
-                               lambda x: calls.append(1))
+                               service_handler)
 
         self.assertTrue(
-            self.services.call('test_domain', 'register_calls', blocking=True))
+            self.services.call('test_domain', 'REGISTER_CALLS', blocking=True))
         self.assertEqual(1, len(calls))
-
-    def test_call_with_blocking_not_done_in_time(self):
-        """Test with blocking."""
-        calls = []
-        self.services.register("test_domain", "register_calls",
-                               lambda x: calls.append(1))
-
-        orig_limit = ha.SERVICE_CALL_LIMIT
-        ha.SERVICE_CALL_LIMIT = 0.01
-        self.assertFalse(
-            self.services.call('test_domain', 'register_calls', blocking=True))
-        self.assertEqual(0, len(calls))
-        ha.SERVICE_CALL_LIMIT = orig_limit
 
     def test_call_non_existing_with_blocking(self):
         """Test non-existing with blocking."""
-        self.pool.add_worker()
-        self.pool.add_worker()
-        orig_limit = ha.SERVICE_CALL_LIMIT
-        ha.SERVICE_CALL_LIMIT = 0.01
-        self.assertFalse(
-            self.services.call('test_domain', 'i_do_not_exist', blocking=True))
-        ha.SERVICE_CALL_LIMIT = orig_limit
+        prior = ha.SERVICE_CALL_LIMIT
+        try:
+            ha.SERVICE_CALL_LIMIT = 0.01
+            assert not self.services.call('test_domain', 'i_do_not_exist',
+                                          blocking=True)
+        finally:
+            ha.SERVICE_CALL_LIMIT = prior
+
+    def test_async_service(self):
+        """Test registering and calling an async service."""
+        calls = []
+
+        @asyncio.coroutine
+        def service_handler(call):
+            """Service handler coroutine."""
+            calls.append(call)
+
+        self.services.register('test_domain', 'register_calls',
+                               service_handler)
+        self.assertTrue(
+            self.services.call('test_domain', 'REGISTER_CALLS', blocking=True))
+        self.hass.block_till_done()
+        self.assertEqual(1, len(calls))
+
+    def test_callback_service(self):
+        """Test registering and calling an async service."""
+        calls = []
+
+        @ha.callback
+        def service_handler(call):
+            """Service handler coroutine."""
+            calls.append(call)
+
+        self.services.register('test_domain', 'register_calls',
+                               service_handler)
+        self.assertTrue(
+            self.services.call('test_domain', 'REGISTER_CALLS', blocking=True))
+        self.hass.block_till_done()
+        self.assertEqual(1, len(calls))
 
 
 class TestConfig(unittest.TestCase):
     """Test configuration methods."""
 
-    def setUp(self):     # pylint: disable=invalid-name
+    # pylint: disable=invalid-name
+    def setUp(self):
         """Setup things to be run when tests are started."""
         self.config = ha.Config()
-
-    def test_config_dir_set_correct(self):
-        """Test config dir set correct."""
-        data_dir = os.getenv('APPDATA') if os.name == "nt" \
-            else os.path.expanduser('~')
-        self.assertEqual(os.path.join(data_dir, ".homeassistant"),
-                         self.config.config_dir)
+        self.assertIsNone(self.config.config_dir)
 
     def test_path_with_file(self):
         """Test get_config_path method."""
-        data_dir = os.getenv('APPDATA') if os.name == "nt" \
-            else os.path.expanduser('~')
-        self.assertEqual(os.path.join(data_dir, ".homeassistant", "test.conf"),
+        self.config.config_dir = '/tmp/ha-config'
+        self.assertEqual("/tmp/ha-config/test.conf",
                          self.config.path("test.conf"))
 
     def test_path_with_dir_and_file(self):
         """Test get_config_path method."""
-        data_dir = os.getenv('APPDATA') if os.name == "nt" \
-            else os.path.expanduser('~')
-        self.assertEqual(
-            os.path.join(data_dir, ".homeassistant", "dir", "test.conf"),
-            self.config.path("dir", "test.conf"))
+        self.config.config_dir = '/tmp/ha-config'
+        self.assertEqual("/tmp/ha-config/dir/test.conf",
+                         self.config.path("dir", "test.conf"))
 
     def test_as_dict(self):
         """Test as dict."""
+        self.config.config_dir = '/tmp/ha-config'
         expected = {
             'latitude': None,
             'longitude': None,
+            'elevation': None,
             CONF_UNIT_SYSTEM: METRIC_SYSTEM.as_dict(),
             'location_name': None,
             'time_zone': 'UTC',
-            'components': [],
+            'components': set(),
+            'config_dir': '/tmp/ha-config',
             'version': __version__,
         }
 
         self.assertEqual(expected, self.config.as_dict())
 
 
-class TestWorkerPool(unittest.TestCase):
-    """Test WorkerPool methods."""
+@patch('homeassistant.core.monotonic')
+def test_create_timer(mock_monotonic, loop):
+    """Test create timer."""
+    hass = MagicMock()
+    funcs = []
+    orig_callback = ha.callback
 
-    def test_exception_during_job(self):
-        """Test exception during a job."""
-        pool = ha.create_worker_pool(1)
+    def mock_callback(func):
+        funcs.append(func)
+        return orig_callback(func)
 
-        def malicious_job(_):
-            raise Exception("Test breaking worker pool")
+    with patch.object(ha, 'callback', mock_callback):
+        ha._async_create_timer(hass)
 
-        calls = []
+        assert len(funcs) == 3
+        fire_time_event, start_timer, stop_timer = funcs
 
-        def register_call(_):
-            calls.append(1)
+    assert len(hass.bus.async_listen_once.mock_calls) == 1
+    event_type, callback = hass.bus.async_listen_once.mock_calls[0][1]
+    assert event_type == EVENT_HOMEASSISTANT_START
+    assert callback is start_timer
 
-        pool.add_job(ha.JobPriority.EVENT_DEFAULT, (malicious_job, None))
-        pool.add_job(ha.JobPriority.EVENT_DEFAULT, (register_call, None))
-        pool.block_till_done()
-        self.assertEqual(1, len(calls))
+    mock_monotonic.side_effect = 10.2, 10.3
+
+    with patch('homeassistant.core.dt_util.utcnow',
+               return_value=sentinel.mock_date):
+        start_timer(None)
+
+    assert len(hass.bus.async_listen_once.mock_calls) == 2
+    assert len(hass.bus.async_fire.mock_calls) == 1
+    assert len(hass.loop.call_later.mock_calls) == 1
+
+    event_type, callback = hass.bus.async_listen_once.mock_calls[1][1]
+    assert event_type == EVENT_HOMEASSISTANT_STOP
+    assert callback is stop_timer
+
+    slp_seconds, callback, nxt = hass.loop.call_later.mock_calls[0][1]
+    assert abs(slp_seconds - 0.9) < 0.001
+    assert callback is fire_time_event
+    assert abs(nxt - 11.2) < 0.001
+
+    event_type, event_data = hass.bus.async_fire.mock_calls[0][1]
+    assert event_type == EVENT_TIME_CHANGED
+    assert event_data[ATTR_NOW] is sentinel.mock_date
+
+
+@patch('homeassistant.core.monotonic')
+def test_timer_out_of_sync(mock_monotonic, loop):
+    """Test create timer."""
+    hass = MagicMock()
+    funcs = []
+    orig_callback = ha.callback
+
+    def mock_callback(func):
+        funcs.append(func)
+        return orig_callback(func)
+
+    with patch.object(ha, 'callback', mock_callback):
+        ha._async_create_timer(hass)
+
+        assert len(funcs) == 3
+        fire_time_event, start_timer, stop_timer = funcs
+
+    mock_monotonic.side_effect = 10.2, 11.3, 11.3
+
+    with patch('homeassistant.core.dt_util.utcnow',
+               return_value=sentinel.mock_date):
+        start_timer(None)
+
+    assert len(hass.loop.call_later.mock_calls) == 1
+
+    slp_seconds, callback, nxt = hass.loop.call_later.mock_calls[0][1]
+    assert slp_seconds == 1
+    assert callback is fire_time_event
+    assert abs(nxt - 12.3) < 0.001

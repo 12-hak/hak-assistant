@@ -4,39 +4,29 @@ Support for Wink locks.
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/lock.wink/
 """
-import logging
 
 from homeassistant.components.lock import LockDevice
-from homeassistant.components.wink import WinkDevice
-from homeassistant.const import CONF_ACCESS_TOKEN
+from homeassistant.components.wink import WinkDevice, DOMAIN
 
-REQUIREMENTS = ['python-wink==0.7.11', 'pubnub==3.8.2']
+DEPENDENCIES = ['wink']
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     """Setup the Wink platform."""
     import pywink
 
-    if discovery_info is None:
-        token = config.get(CONF_ACCESS_TOKEN)
-
-        if token is None:
-            logging.getLogger(__name__).error(
-                "Missing wink access_token. "
-                "Get one at https://winkbearertoken.appspot.com/")
-            return
-
-        pywink.set_bearer_token(token)
-
-    add_devices(WinkLockDevice(lock) for lock in pywink.get_locks())
+    for lock in pywink.get_locks():
+        _id = lock.object_id() + lock.name()
+        if _id not in hass.data[DOMAIN]['unique_ids']:
+            add_devices([WinkLockDevice(lock, hass)])
 
 
 class WinkLockDevice(WinkDevice, LockDevice):
     """Representation of a Wink lock."""
 
-    def __init__(self, wink):
+    def __init__(self, wink, hass):
         """Initialize the lock."""
-        WinkDevice.__init__(self, wink)
+        super().__init__(wink, hass)
 
     @property
     def is_locked(self):

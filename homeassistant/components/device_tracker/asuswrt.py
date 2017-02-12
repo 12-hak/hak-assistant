@@ -12,13 +12,37 @@ import threading
 from collections import namedtuple
 from datetime import timedelta
 
-from homeassistant.components.device_tracker import DOMAIN
+import voluptuous as vol
+
+from homeassistant.components.device_tracker import (
+    DOMAIN, PLATFORM_SCHEMA, DeviceScanner)
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.helpers import validate_config
 from homeassistant.util import Throttle
+import homeassistant.helpers.config_validation as cv
 
 # Return cached results if last scan was less then this time ago.
 MIN_TIME_BETWEEN_SCANS = timedelta(seconds=5)
+
+CONF_PROTOCOL = 'protocol'
+CONF_MODE = 'mode'
+CONF_SSH_KEY = 'ssh_key'
+CONF_PUB_KEY = 'pub_key'
+SECRET_GROUP = 'Password or SSH Key'
+
+PLATFORM_SCHEMA = vol.All(
+    cv.has_at_least_one_key(CONF_PASSWORD, CONF_PUB_KEY, CONF_SSH_KEY),
+    PLATFORM_SCHEMA.extend({
+        vol.Required(CONF_HOST): cv.string,
+        vol.Required(CONF_USERNAME): cv.string,
+        vol.Optional(CONF_PROTOCOL, default='ssh'):
+            vol.In(['ssh', 'telnet']),
+        vol.Optional(CONF_MODE, default='router'):
+            vol.In(['router', 'ap']),
+        vol.Exclusive(CONF_PASSWORD, SECRET_GROUP): cv.string,
+        vol.Exclusive(CONF_SSH_KEY, SECRET_GROUP): cv.isfile,
+        vol.Exclusive(CONF_PUB_KEY, SECRET_GROUP): cv.isfile
+    }))
+
 
 _LOGGER = logging.getLogger(__name__)
 REQUIREMENTS = ['pexpect==4.0.1']
@@ -47,47 +71,62 @@ _ARP_REGEX = re.compile(
 
 _IP_NEIGH_CMD = 'ip neigh'
 _IP_NEIGH_REGEX = re.compile(
-    r'(?P<ip>([0-9]{1,3}[\.]){3}[0-9]{1,3})\s' +
-    r'\w+\s' +
-    r'\w+\s' +
-    r'(\w+\s(?P<mac>(([0-9a-f]{2}[:-]){5}([0-9a-f]{2}))))?\s' +
+    r'(?P<ip>([0-9]{1,3}[\.]){3}[0-9]{1,3}|'
+    r'([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{1,4}){1,7})\s'
+    r'\w+\s'
+    r'\w+\s'
+    r'(\w+\s(?P<mac>(([0-9a-f]{2}[:-]){5}([0-9a-f]{2}))))?\s'
+    r'\s?(router)?'
     r'(?P<status>(\w+))')
+
+_NVRAM_CMD = 'nvram get client_info_tmp'
+_NVRAM_REGEX = re.compile(
+    r'.*>.*>' +
+    r'(?P<ip>([0-9]{1,3}[\.]){3}[0-9]{1,3})' +
+    r'>' +
+    r'(?P<mac>(([0-9a-fA-F]{2}[:-]){5}([0-9a-fA-F]{2})))' +
+    r'>' +
+    r'.*')
 
 
 # pylint: disable=unused-argument
 def get_scanner(hass, config):
     """Validate the configuration and return an ASUS-WRT scanner."""
-    if not validate_config(config,
-                           {DOMAIN: [CONF_HOST, CONF_USERNAME]},
-                           _LOGGER):
-        return None
-    elif CONF_PASSWORD not in config[DOMAIN] and \
-            'ssh_key' not in config[DOMAIN] and \
-            'pub_key' not in config[DOMAIN]:
-        _LOGGER.error('Either a private key or password must be provided')
-        return None
-
     scanner = AsusWrtDeviceScanner(config[DOMAIN])
 
     return scanner if scanner.success_init else None
 
-AsusWrtResult = namedtuple('AsusWrtResult', 'neighbors leases arp')
+
+AsusWrtResult = namedtuple('AsusWrtResult', 'neighbors leases arp nvram')
 
 
-class AsusWrtDeviceScanner(object):
+class AsusWrtDeviceScanner(DeviceScanner):
     """This class queries a router running ASUSWRT firmware."""
 
-    # pylint: disable=too-many-instance-attributes, too-many-branches
     # Eighth attribute needed for mode (AP mode vs router mode)
-
     def __init__(self, config):
         """Initialize the scanner."""
         self.host = config[CONF_HOST]
-        self.username = str(config[CONF_USERNAME])
-        self.password = str(config.get(CONF_PASSWORD, ''))
-        self.ssh_key = str(config.get('ssh_key', config.get('pub_key', '')))
-        self.protocol = config.get('protocol')
-        self.mode = config.get('mode')
+        self.username = config[CONF_USERNAME]
+        self.password = config.get(CONF_PASSWORD, '')
+        self.ssh_key = config.get('ssh_key', config.get('pub_key', ''))
+        self.protocol = config[CONF_PROTOCOL]
+        self.mode = config[CONF_MODE]
+
+        if self.protocol == 'ssh':
+            if self.ssh_key:
+                self.ssh_secret = {'ssh_key': self.ssh_key}
+            elif self.password:
+                self.ssh_secret = {'password': self.password}
+            else:
+                _LOGGER.error('No password or private key specified')
+                self.success_init = False
+                return
+        else:
+            if not self.password:
+                _LOGGER.error('No password specified')
+                self.success_init = False
+                return
 
         self.lock = threading.Lock()
 
@@ -129,7 +168,8 @@ class AsusWrtDeviceScanner(object):
             active_clients = [client for client in data.values() if
                               client['status'] == 'REACHABLE' or
                               client['status'] == 'DELAY' or
-                              client['status'] == 'STALE']
+                              client['status'] == 'STALE' or
+                              client['status'] == 'IN_NVRAM']
             self.last_results = active_clients
             return True
 
@@ -137,15 +177,17 @@ class AsusWrtDeviceScanner(object):
         """Retrieve data from ASUSWRT via the ssh protocol."""
         from pexpect import pxssh, exceptions
 
+        ssh = pxssh.pxssh()
         try:
-            ssh = pxssh.pxssh()
-            if self.ssh_key:
-                ssh.login(self.host, self.username, ssh_key=self.ssh_key)
-            elif self.password:
-                ssh.login(self.host, self.username, self.password)
-            else:
-                _LOGGER.error('No password or private key specified')
-                return None
+            ssh.login(self.host, self.username, **self.ssh_secret)
+        except exceptions.EOF as err:
+            _LOGGER.error('Connection refused. Is SSH enabled?')
+            return None
+        except pxssh.ExceptionPxssh as err:
+            _LOGGER.error('Unable to connect via SSH: %s', str(err))
+            return None
+
+        try:
             ssh.sendline(_IP_NEIGH_CMD)
             ssh.prompt()
             neighbors = ssh.before.split(b'\n')[1:-1]
@@ -156,18 +198,20 @@ class AsusWrtDeviceScanner(object):
                 ssh.sendline(_WL_CMD)
                 ssh.prompt()
                 leases_result = ssh.before.split(b'\n')[1:-1]
+                ssh.sendline(_NVRAM_CMD)
+                ssh.prompt()
+                nvram_result = ssh.before.split(b'\n')[1].split(b'<')[1:]
             else:
                 arp_result = ['']
+                nvram_result = ['']
                 ssh.sendline(_LEASES_CMD)
                 ssh.prompt()
                 leases_result = ssh.before.split(b'\n')[1:-1]
             ssh.logout()
-            return AsusWrtResult(neighbors, leases_result, arp_result)
+            return AsusWrtResult(neighbors, leases_result, arp_result,
+                                 nvram_result)
         except pxssh.ExceptionPxssh as exc:
             _LOGGER.error('Unexpected response from router: %s', exc)
-            return None
-        except exceptions.EOF:
-            _LOGGER.error('Connection refused or no route to host')
             return None
 
     def telnet_connection(self):
@@ -188,13 +232,18 @@ class AsusWrtDeviceScanner(object):
                 telnet.write('{}\n'.format(_WL_CMD).encode('ascii'))
                 leases_result = (telnet.read_until(prompt_string).
                                  split(b'\n')[1:-1])
+                telnet.write('{}\n'.format(_NVRAM_CMD).encode('ascii'))
+                nvram_result = (telnet.read_until(prompt_string).
+                                split(b'\n')[1].split(b'<')[1:])
             else:
                 arp_result = ['']
+                nvram_result = ['']
                 telnet.write('{}\n'.format(_LEASES_CMD).encode('ascii'))
                 leases_result = (telnet.read_until(prompt_string).
                                  split(b'\n')[1:-1])
             telnet.write('exit\n'.encode('ascii'))
-            return AsusWrtResult(neighbors, leases_result, arp_result)
+            return AsusWrtResult(neighbors, leases_result, arp_result,
+                                 nvram_result)
         except EOFError:
             _LOGGER.error('Unexpected response from router')
             return None
@@ -240,8 +289,10 @@ class AsusWrtDeviceScanner(object):
 
                 # match mac addresses to IP addresses in ARP table
                 for arp in result.arp:
-                    if match.group('mac').lower() in arp.decode('utf-8'):
-                        arp_match = _ARP_REGEX.search(arp.decode('utf-8'))
+                    if match.group('mac').lower() in \
+                            arp.decode('utf-8').lower():
+                        arp_match = _ARP_REGEX.search(
+                            arp.decode('utf-8').lower())
                         if not arp_match:
                             _LOGGER.warning('Could not parse arp row: %s', arp)
                             continue
@@ -252,8 +303,30 @@ class AsusWrtDeviceScanner(object):
                             'ip': arp_match.group('ip'),
                             'mac': match.group('mac').upper(),
                             }
+
+                # match mac addresses to IP addresses in NVRAM table
+                for nvr in result.nvram:
+                    if match.group('mac').upper() in nvr.decode('utf-8'):
+                        nvram_match = _NVRAM_REGEX.search(nvr.decode('utf-8'))
+                        if not nvram_match:
+                            _LOGGER.warning('Could not parse nvr row: %s', nvr)
+                            continue
+
+                        # skip current check if already in ARP table
+                        if nvram_match.group('ip') in devices.keys():
+                            continue
+
+                        devices[nvram_match.group('ip')] = {
+                            'host': host,
+                            'status': 'IN_NVRAM',
+                            'ip': nvram_match.group('ip'),
+                            'mac': match.group('mac').upper(),
+                            }
+
         else:
             for lease in result.leases:
+                if lease.startswith(b'duid '):
+                    continue
                 match = _LEASES_REGEX.search(lease.decode('utf-8'))
 
                 if not match:
